@@ -60,7 +60,10 @@ export default function HomeScreen({ navigation }: Props) {
             style={styles.card}
             onPress={() => navigation.navigate("EntryDetail", { id: item.id })}
           >
-            <Image source={{ uri: item.imageUri }} style={styles.thumb} />
+            <Image
+              source={{ uri: item.cloudinaryUrl ?? item.imageUri }}
+              style={styles.thumb}
+            />
             <View style={styles.cardBody}>
               <Text style={styles.cardTitle} numberOfLines={1}>
                 {item.title || "Untitled"}
