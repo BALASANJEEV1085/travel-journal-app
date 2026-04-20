@@ -4,6 +4,7 @@ import {
   Alert,
   Image,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -18,10 +19,29 @@ import type { JournalEntry } from "../types";
 
 type Props = NativeStackScreenProps<RootStackParamList, "EntryDetail">;
 
+/**
+ * Cross-platform delete confirmation.
+ * Alert.alert with button callbacks does not work on web,
+ * so we fall back to window.confirm there.
+ */
+function confirmDelete(onConfirm: () => void) {
+  if (Platform.OS === "web") {
+    // eslint-disable-next-line no-restricted-globals
+    const ok = window.confirm("Delete entry? This cannot be undone.");
+    if (ok) onConfirm();
+  } else {
+    Alert.alert("Delete entry", "This cannot be undone.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: onConfirm },
+    ]);
+  }
+}
+
 export default function EntryDetailScreen({ route, navigation }: Props) {
   const { id } = route.params;
   const [entry, setEntry] = useState<JournalEntry | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -39,20 +59,26 @@ export default function EntryDetailScreen({ route, navigation }: Props) {
     });
   }, [entry]);
 
-  const onDelete = useCallback(() => {
+  const performDelete = useCallback(async () => {
     if (!entry) return;
-    Alert.alert("Delete entry", "This cannot be undone.", [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          await deleteEntry(entry.id);
-          navigation.goBack();
-        },
-      },
-    ]);
+    setDeleting(true);
+    try {
+      await deleteEntry(entry.id);
+      navigation.goBack();
+    } catch (err) {
+      setDeleting(false);
+      const message = err instanceof Error ? err.message : String(err);
+      if (Platform.OS === "web") {
+        window.alert(`Failed to delete: ${message}`);
+      } else {
+        Alert.alert("Delete failed", message);
+      }
+    }
   }, [entry, navigation]);
+
+  const onDelete = useCallback(() => {
+    confirmDelete(performDelete);
+  }, [performDelete]);
 
   if (loading) {
     return (
@@ -108,13 +134,26 @@ export default function EntryDetailScreen({ route, navigation }: Props) {
 
       <View style={styles.metaBox}>
         <Text style={styles.metaLabel}>Cloudinary</Text>
-        <Text style={styles.metaValue} selectable>
-          {entry.cloudinaryUrl ?? "Not uploaded"}
+        <Text
+          style={[
+            styles.metaValue,
+            entry.cloudinaryUrl ? styles.metaSuccess : styles.metaError,
+          ]}
+        >
+          {entry.cloudinaryUrl ? "✓ Successfully uploaded" : "✗ Not uploaded"}
         </Text>
       </View>
 
-      <Pressable style={styles.deleteBtn} onPress={onDelete}>
-        <Text style={styles.deleteBtnText}>Delete entry</Text>
+      <Pressable
+        style={[styles.deleteBtn, deleting && styles.deleteBtnDisabled]}
+        onPress={onDelete}
+        disabled={deleting}
+      >
+        {deleting ? (
+          <ActivityIndicator color="#fff" />
+        ) : (
+          <Text style={styles.deleteBtnText}>Delete entry</Text>
+        )}
       </Pressable>
     </ScrollView>
   );
@@ -169,12 +208,15 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   metaLabel: { fontSize: 12, fontWeight: "700", color: "#555", marginBottom: 4 },
-  metaValue: { fontSize: 12, color: "#444" },
+  metaValue: { fontSize: 14, color: "#444", fontWeight: "600" },
+  metaSuccess: { color: "#2e7d32" },
+  metaError: { color: "#d64545" },
   deleteBtn: {
     backgroundColor: "#d64545",
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: "center",
   },
+  deleteBtnDisabled: { opacity: 0.6 },
   deleteBtnText: { color: "#fff", fontWeight: "700", fontSize: 16 },
 });

@@ -1,7 +1,11 @@
+import { Platform } from "react-native";
+import * as Crypto from "expo-crypto";
+
 import {
+  CLOUDINARY_API_KEY,
+  CLOUDINARY_API_SECRET,
   CLOUDINARY_CLOUD_NAME,
   CLOUDINARY_UPLOAD_FOLDER,
-  CLOUDINARY_UPLOAD_PRESET,
 } from "../config";
 
 export interface CloudinaryUploadResult {
@@ -18,8 +22,40 @@ export interface UploadParams {
 }
 
 /**
- * Uploads an image to Cloudinary using an unsigned upload preset.
- * https://cloudinary.com/documentation/upload_images#unsigned_upload
+ * Generate a Cloudinary-compatible signature.
+ *
+ * Cloudinary expects: SHA1(alphabetically-sorted-params + api_secret)
+ * where params are joined as "key=value&key=value".
+ */
+async function generateSignature(
+  params: Record<string, string>,
+): Promise<string> {
+  // Sort keys alphabetically and build the string to sign.
+  const sortedKeys = Object.keys(params).sort();
+  const stringToSign = sortedKeys
+    .map((key) => `${key}=${params[key]}`)
+    .join("&");
+
+  const digest = await Crypto.digestStringAsync(
+    Crypto.CryptoDigestAlgorithm.SHA1,
+    stringToSign + CLOUDINARY_API_SECRET,
+  );
+
+  return digest;
+}
+
+/**
+ * Convert a local file URI to a Blob for web uploads.
+ * On web, image URIs from expo-image-picker are blob: or data: URLs.
+ */
+async function uriToBlob(uri: string): Promise<Blob> {
+  const response = await fetch(uri);
+  return response.blob();
+}
+
+/**
+ * Uploads an image to Cloudinary using signed upload.
+ * https://cloudinary.com/documentation/upload_images#generating_authentication_signatures
  */
 export async function uploadImageToCloudinary(
   params: UploadParams,
@@ -28,10 +64,9 @@ export async function uploadImageToCloudinary(
 
   const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
 
-  const form = new FormData();
-  form.append("upload_preset", CLOUDINARY_UPLOAD_PRESET);
-  form.append("folder", CLOUDINARY_UPLOAD_FOLDER);
+  const timestamp = Math.round(Date.now() / 1000).toString();
 
+  // Build the context string for metadata.
   const contextParts: string[] = [];
   if (title) contextParts.push(`caption=${sanitizeContext(title)}`);
   if (placeLabel) contextParts.push(`place=${sanitizeContext(placeLabel)}`);
@@ -39,20 +74,50 @@ export async function uploadImageToCloudinary(
     contextParts.push(`lat=${latitude}`);
     contextParts.push(`lng=${longitude}`);
   }
-  if (contextParts.length > 0) {
-    form.append("context", contextParts.join("|"));
-  }
+  const contextString =
+    contextParts.length > 0 ? contextParts.join("|") : undefined;
 
+  // Build the tags string.
   const tagParts = ["travel-journal"];
   if (placeLabel) tagParts.push(slugify(placeLabel));
-  form.append("tags", tagParts.join(","));
+  const tagsString = tagParts.join(",");
 
-  // React Native FormData file shape.
-  form.append("file", {
-    uri: imageUri,
-    name: `journal-${Date.now()}.jpg`,
-    type: "image/jpeg",
-  } as unknown as Blob);
+  // Parameters that need to be signed (must match what's sent in the form).
+  const signableParams: Record<string, string> = {
+    folder: CLOUDINARY_UPLOAD_FOLDER,
+    tags: tagsString,
+    timestamp,
+  };
+  if (contextString) {
+    signableParams.context = contextString;
+  }
+
+  const signature = await generateSignature(signableParams);
+
+  // Build the FormData.
+  const form = new FormData();
+  form.append("folder", CLOUDINARY_UPLOAD_FOLDER);
+  form.append("tags", tagsString);
+  form.append("timestamp", timestamp);
+  form.append("api_key", CLOUDINARY_API_KEY);
+  form.append("signature", signature);
+  if (contextString) {
+    form.append("context", contextString);
+  }
+
+  // File handling differs between web and native.
+  if (Platform.OS === "web") {
+    // On web, convert the blob:/data: URI to a real Blob.
+    const blob = await uriToBlob(imageUri);
+    form.append("file", blob, `journal-${Date.now()}.jpg`);
+  } else {
+    // React Native FormData file shape (native only).
+    form.append("file", {
+      uri: imageUri,
+      name: `journal-${Date.now()}.jpg`,
+      type: "image/jpeg",
+    } as unknown as Blob);
+  }
 
   const response = await fetch(uploadUrl, {
     method: "POST",
