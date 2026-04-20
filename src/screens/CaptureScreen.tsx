@@ -132,6 +132,9 @@ export default function CaptureScreen({ navigation }: Props) {
 
       await addEntry(entry);
       navigation.goBack();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert("Save failed", `Could not save the entry. ${message}`);
     } finally {
       setSaving(false);
     }
